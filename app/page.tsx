@@ -12,9 +12,15 @@ import { Badge } from "@/components/ui/badge";
 type RunResult = {
   reportHtml: string;
   stats: Record<string, { successRate: number; n: number }>;
+};
+
+type RunMeta = {
   usedFallbackSuccessSignal: boolean;
   personaSignals: string[] | null;
 };
+
+const POLL_INTERVAL_MS = 4000;
+const POLL_TIMEOUT_MS = 20 * 60_000; // sandbox has a generous timeout; poll patiently
 
 export default function Home() {
   const [urls, setUrls] = useState(["", ""]);
@@ -22,18 +28,46 @@ export default function Home() {
   const [successSignal, setSuccessSignal] = useState("");
   const [personaFile, setPersonaFile] = useState<File | null>(null);
   const [running, setRunning] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [meta, setMeta] = useState<RunMeta | null>(null);
 
   const setUrl = (i: number, v: string) => setUrls((prev) => prev.map((u, idx) => (idx === i ? v : u)));
   const addUrl = () => setUrls((prev) => (prev.length < 3 ? [...prev, ""] : prev));
   const removeUrl = (i: number) => setUrls((prev) => prev.filter((_, idx) => idx !== i));
+
+  async function pollStatus(runId: string) {
+    const start = Date.now();
+    while (Date.now() - start < POLL_TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const res = await fetch(`/api/status?runId=${runId}`);
+      const data = await res.json();
+      if (data.error) {
+        setError(data.error);
+        return;
+      }
+      if (data.status === "done") {
+        setResult({ reportHtml: data.reportHtml, stats: data.stats });
+        return;
+      }
+      if (data.status === "error") {
+        setError(data.error || "The run failed.");
+        return;
+      }
+      setStatusText(
+        data.status === "queued" ? "Starting sandbox…" : "Running synthetic sessions…"
+      );
+    }
+    setError("Timed out waiting for the run to finish.");
+  }
 
   async function runTest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setResult(null);
     setRunning(true);
+    setStatusText("Starting…");
     try {
       const form = new FormData();
       urls.forEach((u, i) => form.set(`url${i + 1}`, u));
@@ -46,12 +80,14 @@ export default function Home() {
       if (!res.ok) {
         setError(data.error || "Something went wrong.");
       } else {
-        setResult(data);
+        setMeta({ usedFallbackSuccessSignal: data.usedFallbackSuccessSignal, personaSignals: data.personaSignals });
+        await pollStatus(data.runId);
       }
     } catch (err: any) {
       setError(String(err?.message || err));
     } finally {
       setRunning(false);
+      setStatusText(null);
     }
   }
 
@@ -153,8 +189,13 @@ export default function Home() {
           </Card>
 
           <Button type="submit" disabled={running} className="w-full">
-            {running ? "Running synthetic sessions… this can take a couple of minutes" : "Run Test"}
+            {running ? statusText || "Working…" : "Run Test"}
           </Button>
+          {running && (
+            <p className="text-center text-xs text-muted-foreground">
+              A real browser session runs per synthetic user — this can take a few minutes.
+            </p>
+          )}
         </form>
 
         {error && (
@@ -169,9 +210,9 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-medium">Report</h2>
               <div className="flex gap-2">
-                {result.usedFallbackSuccessSignal && <Badge variant="secondary">No success signal — friction metrics only</Badge>}
-                {result.personaSignals && result.personaSignals.length > 0 && (
-                  <Badge variant="secondary">Persona: {result.personaSignals.join(", ")}</Badge>
+                {meta?.usedFallbackSuccessSignal && <Badge variant="secondary">No success signal — friction metrics only</Badge>}
+                {meta?.personaSignals && meta.personaSignals.length > 0 && (
+                  <Badge variant="secondary">Persona: {meta.personaSignals.join(", ")}</Badge>
                 )}
               </div>
             </div>

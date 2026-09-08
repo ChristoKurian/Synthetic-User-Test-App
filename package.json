@@ -9,12 +9,11 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^149.0.0",
+    "@vercel/sandbox": "^3.2.1",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.2.6",
     "lucide-react": "^1.42.0",
     "next": "16.3.4",
-    "playwright-core": "^1.63.0",
     "radix-ui": "^1.6.7",
     "react": "19.2.8",
     "react-dom": "19.2.8",

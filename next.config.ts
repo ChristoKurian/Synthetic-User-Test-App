@@ -1,12 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // playwright-core needs its non-JS asset files (browsers.json, etc.) at
-  // runtime, but Next's automatic dependency tracer only follows JS
-  // require/import statements and misses them — bundle the full packages
-  // explicitly for the one route that needs them.
+  // Both routes read lib/engine/*.mjs as raw text (to write into the
+  // sandbox) rather than importing them as JS modules, so Next's automatic
+  // dependency tracer doesn't see the reference and would otherwise drop
+  // them from the deployed function bundle.
   outputFileTracingIncludes: {
-    "/api/run": ["./node_modules/playwright-core/**/*", "./node_modules/@sparticuz/chromium/**/*"],
+    "/api/run": ["./lib/engine/**/*"],
+    "/api/status": ["./lib/engine/**/*"],
   },
 };
 

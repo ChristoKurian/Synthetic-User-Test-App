@@ -1,30 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-// @ts-ignore -- plain JS engine modules, not typed
-import { runComparison } from "@/lib/engine/engine.mjs";
-// @ts-ignore
-import { launchBrowser } from "@/lib/engine/launch-browser.mjs";
-// @ts-ignore
-import { buildReportData, renderReportHtml } from "@/lib/engine/report.mjs";
+import { randomUUID } from "node:crypto";
 // @ts-ignore
 import { parsePersonaText } from "@/lib/engine/parse-persona-text.mjs";
+import { getSandbox, writeEngineFiles, runDirFor } from "@/lib/sandbox-orchestrator";
 
-export const maxDuration = 300; // Vercel Functions: extended timeout for a real multi-session run
+export const maxDuration = 60; // this route only orchestrates — writes files and starts a detached
+// process in the sandbox, then returns. The actual test run happens in the
+// sandbox independently of this Function's lifetime; see app/api/status.
 export const dynamic = "force-dynamic";
 
-// Keep the hosted default modest — this runs synchronously inside one
-// request, so it has to fit inside maxDuration with real margin. Bigger
-// sweeps belong to the CLI skill (github.com/ChristoKurian/Synthetic-User-Test),
-// which has no such ceiling.
-const PERSONA_COUNT_PER_VARIANT = 2;
-// Verified against the real deployed function: @sparticuz/chromium's
-// `--single-process` Chromium (required to fit Vercel's serverless sandbox)
-// shares one OS process across every context — concurrency 2+ reliably
-// crashed the whole browser mid-run in live testing, concurrency 1 did
-// not. Running fully sequential is the safe default until sessions are
-// isolated into separate browser instances (see README) rather than
-// shared contexts within one process.
-const CONCURRENCY = 1;
-const MAX_SESSION_DURATION_MS = 20000;
+// Real concurrency and a real persona count are back on the table — the
+// sandbox is a full multi-vCPU Linux VM running normal multi-process
+// Chromium, not the constrained single-process serverless-Function
+// workaround that crashed under any concurrency >1.
+const PERSONA_COUNT_PER_VARIANT = 10;
+const CONCURRENCY = 4;
+const MAX_SESSION_DURATION_MS = 45000;
 
 function isPlausibleUrl(u: string) {
   try {
@@ -63,40 +54,47 @@ export async function POST(req: NextRequest) {
   const parsedPersona = parsePersonaText(personaText);
 
   const variants = urls.map((url, i) => ({ name: `v${i + 1}`, url }));
-
   const task: any = {
     description: goal,
     successCriteria: successSignal ? [{ type: "textVisible", value: successSignal }] : [],
   };
-
   const personas: any = parsedPersona
     ? { mix: [{ name: "described_users", traits: parsedPersona.traits, count: PERSONA_COUNT_PER_VARIANT }] }
     : { count: PERSONA_COUNT_PER_VARIANT };
 
+  const config = {
+    variants,
+    task,
+    personas,
+    concurrency: CONCURRENCY,
+    maxDurationMs: MAX_SESSION_DURATION_MS,
+  };
+
   try {
-    const variantResults = await runComparison({
-      variants,
-      task,
-      personas,
-      concurrency: CONCURRENCY,
-      maxDurationMs: MAX_SESSION_DURATION_MS,
-      launchBrowser,
+    const runId = randomUUID();
+    const sandbox = await getSandbox();
+    const dir = runDirFor(runId);
+    await sandbox.runCommand({ cmd: "mkdir", args: ["-p", dir] });
+    await writeEngineFiles(sandbox);
+    await sandbox.writeFiles([
+      { path: `${dir}/config.json`, content: JSON.stringify(config) },
+      { path: `${dir}/status.json`, content: JSON.stringify({ status: "queued" }) },
+    ]);
+    // Detached: this Function does not wait for the run to finish. The
+    // sandbox keeps executing after this request returns; app/api/status
+    // polls status.json to find out when it's done.
+    await sandbox.runCommand({
+      cmd: "node",
+      args: ["/vercel/sandbox/engine/run.mjs", dir],
+      detached: true,
     });
 
-    const stats = buildReportData(variantResults);
-    const title = `Comparison: ${variants.map((v: any) => v.name).join(" vs ")}`;
-    const reportHtml = renderReportHtml(title, stats);
-
     return NextResponse.json({
-      reportHtml,
-      stats,
+      runId,
       usedFallbackSuccessSignal: !successSignal,
       personaSignals: parsedPersona?.matchedSignals || null,
     });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Run failed: ${String(err?.message || err).slice(-500)}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `Could not start the run: ${String(err?.message || err).slice(-500)}` }, { status: 500 });
   }
 }
