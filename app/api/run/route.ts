@@ -68,6 +68,13 @@ export async function POST(req: NextRequest) {
     personas,
     concurrency: CONCURRENCY,
     maxDurationMs: MAX_SESSION_DURATION_MS,
+    // Threaded through to the report renderer running inside the sandbox —
+    // without a real success signal, no session can ever register as
+    // "success" (see engine.mjs's checkCriteria: an empty criteria list
+    // always returns null), so a bare "0%" in the report would be
+    // deterministic noise, not a real finding. The report needs to know to
+    // say that plainly instead of showing a fake zero.
+    hasSuccessSignal: Boolean(successSignal),
   };
 
   try {
